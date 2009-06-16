@@ -1,0 +1,170 @@
+FLSToS - FLS Theft of Service [2002, 2004]
+           --   Noah Williamsson <noah@hack.se>
+
+
+
+Kod för att kunna interneta utan att logga in på Comhem, Telia Homerun
+och Telia ADSL. På Comhem shapas inte bandbredden förrän vid inloggning
+och det verkar som man kan komma upp i ~2mbit/s nedströms iaf utan
+inloggning.
+
+För att det här ska fungera måste man ha en Linux-dator med stöd för iptables
+och NAT och TUN/TAP-devicen kompilerad som modul (eller inkompilerad i
+kärnan). Själv har jag testat med Linux 2.4/2.6 och tun.o kompilerad som modul.
+
+
+
+Uppdatering 2004-10
+===================
+Skrev om programmet lite och fixade så att tosserver stöder multipla klienter
+och automatiskt kan konfigurera tunneln och nödvändiga iptables regler.
+Kommer det ingen trafik på tunneln på över en timme kommer tunneln att tas ner.
+Klienten konfigurerar sin del av tunneln baserat på svaret från servern.
+Tristessen på hotellet har ingen lag!
+Onödigt vetande: Homerun nådde inte in på hotellrummet och alla tester är
+därför utförda på balkongen i det stockholmska höstvädret. ;P
+I väntan på flyget hem har jag uppdaterat READMEn också.
+
+
+
+DNSer
+=====
+Comhem och Telia ADSL använder båda 10.0.0.1, 10.0.0.2.
+I alla fall på Telia ADSL fungerar även 10.0.0.6.
+På Telia Homerun fungerar bara 10.0.0.6.
+
+[ 10.1, 10.2 är hårdkodade f.n., ska styra upp så fort jag får tid
+  så man kan speca DNS-servrar som en parameter till programmet.
+  Bashis föreslog att man skulle kunna plocka dem från /etc/resolv.conf
+  som uppdateras när man kört igång dhcpcd ]
+
+
+
+Hur man får igång tunneln
+=========================
+Tosserver måste rulla på någon maskin innan det går att använda
+klienten. Ipfilter måste finnas på maskinen det rullar på, ipforwarding
+måste vara påslaget och ev. moduler som tillhandahåller NAT funktionalitet
+på maskinen måste vara laddade. Tun modulen måste också vara laddad.
+Programmet förutsätter att iptables och ifconfig ligger i /sbin.
+Dessa program kommer att startas när klienten requestar en ny tunnel.
+
+tun.example.net är en NS-pekare till 192.0.2.3
+5000 är porten tosclient kommer lyssna efter UDP-trafik på
+1.2.3.4 är IPn klienten fick via DHCP på Homerun
+
+  # ./tosserver
+  Usage: ./tosserver <domain> <external ip> <dataport>
+          <domain> - Domän med NS-pekare som pekar till external ip
+          <external ip> - Utpekad av NS-pekare. Används för datautbyte.
+          <dataport> - Port klienterna lyssnar på
+
+  Exempel: ./tosserver tun.example.net 192.0.2.3 5000
+
+
+På klientsidan måste man fått en publik IP-adress och ha tun modulen laddad.
+
+  # ./tosclient
+  Usage: ./tosclient <domain> <external ip> <dataport> <dns1[,dns2,..]> [mtu]
+          domain - Domän med NS-pekare till servern
+          external ip - Adress där vi lyssnar efter inkommande UDP-paket
+          dataport - Port där vi lyssnar efter inkommande UDP-paket
+          dns - 10.0.0.1,10.0.0.2 (comhem/adsl) eller 10.0.0.6 (homerun)
+          mtu - MTU för tunnelinterfacet
+  
+  Exempel: ./tosclient tun.example.net 1.2.3.4 5000 10.0.0.6
+
+
+När tunneln är uppe får man manuellt routa trafiken via tun-interfacet.
+Jag testade att routa 0.0.0.0 via det men det gick åt pipan. Antar att det
+beror på att jag missade binda socketen jag skickar ut DNS-requests på till
+den publika IP-adressen man fick av DCHPn nu när jag kodade om programmet.
+Eller kanske inte. Jag hade för mig att det funkade innan. Det löser sig
+kanske med en host route för DNS-servern via ethX.
+
+
+
+Hur det funkar
+==============
+När man väl fått en IP-adress av Comhem/Homerun så kan man inte skicka någon
+trafik ut på internet förrän man loggat in.
+Däremot kan man hela tiden ta emot trafik från internet.
+Detta programmet utnyttjar det faktum att DNS-servrarna gör rekursiva
+lookups på DNS-frågor för att på så sätt kunna tunnla ut trafik på internet.
+
+* All data som ska ut på internet från Comhem/Homerun-datorn tunnlas genom
+  DNS-servern genom att man skickar en fråga efter ett A-record för
+  en viss host (som egentligen är uuencodad IP-trafik + serial + domän).
+* DNS-servern ställer sedan denna frågan till den ansvariga DNS-servern för
+  domänen. Den ansvariga DNS-servern är serverdelen av FLSToS.
+* Serverdelen avkodar IP-datat och NATar denna trafiken och skickar ut den
+  på internet.
+* Svarstrafiken kommer sedan skickas rått i ett UDP-paket tillbaka till
+  klienten som sedan kommer att skriva in den i tun-interfacet.
+
+
+
+MTU på klient-datorn
+====================
+Ett DNS-paket som kommer över UDP får vara max 512 bytes, exklusive
+IP och UDP-delen.. Om DNS-headern är inräknad i dessa 512 bytes eller inte
+vet jag faktiskt inte.
+Varje label i DNS kan vara 63 bytes och det kan finnas max 127 st i
+ett hostnamn.
+Trafik som läses från tunneln (på klientsidan) uuencodas och splittas
+upp i labels på högst 63 bytes (vid varje split tillkommer det en byte).
+Sen appendas ett 5 bytes stort serial (med punkt blir det 6 bytes).
+Därefter appendas tunnelsubdomänen plus 4 bytes.
+
+paf@ påstod att DNS-paket över UDP visst kunde vara över 512 bytes men
+jag har inte lyckats få igenom trafik via de frågor jag ställer när rådatat
+som kodas om till DNS-frågor varit längre än ~160-180 bytes.
+
+Det högsta MTU värde på klientsidan jag fått SSH att fungera med (Telia Homerun
+2004-10) är 168 bytes.
+
+
+
+TODO
+====
+Se om man vinner något på att filtrera trafiken genom zlib innan man
+krypterar den (inte heller fixat) och uuencodar den och gör den till
+en fin liten DNS-fråga
+
+Gå igenom koden - förmodligen är DNS-avkodnings-koden en schweizerost!
+
+Leta upp burk man kan spoofa från och låta Comhem/Homerun-burken tunnla
+sin utgående trafik över DNS till spoofburken, och därifrån spoofa avsändar-
+adressen på trafiken istället för att NATa den.. och sen låta comhemburken
+ta emot trafiken själv.. Vore intressant om det fungerade.
+
+
+
+Porta till andra OS
+===================
+Det borde vara enkelt att porta till andra OS som stöder ett tun-liknande
+interface, typ FreeBSD. Det som behövs portas är tun.c och de Linux-
+specifika system() anropen som använder ifconfig och iptables i tosserver.c.
+
+
+
+Mer info
+========
+Uppkopplingen shapas enligt vissa personer när man loggar in.
+Det ska tydligen finnas både 0.5 och 1.0mbit konton.
+Comhemburken floodades med UDP trafik och peakade 2850kbit/s
+trafik oinloggad..
+Verkade dock inte funka på Telia ADSL.
+
+Det verkar som man kan sno åt sig två ip-adresser med Comhem.
+Dock verkar det bara gå att ta emot trafik på den första.
+
+Nu senast råkade jag ut för att 10.0.0.6 slutade svara på fler requests 
+på frågor till min domän efter att jag testat ladda upp en fil över DNS.
+Det fungerade dock på morgonen igen.
+
+
+
+Credits
+=======
+TiAMO, Spockie, nidan, Wowie, Chorus, bashis.
